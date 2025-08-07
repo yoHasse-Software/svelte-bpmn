@@ -2,6 +2,11 @@
 	import { onMount, onDestroy } from 'svelte';
 	import BpmnModeler from 'bpmn-js/lib/Modeler';
 	import { BpmnFileManager, debounce, type FileHandle } from '../utils/fileAccess';
+	
+	// Import additional modules for enhanced BPMN functionality
+	import minimapModule from 'diagram-js-minimap';
+	// import BpmnHelp from './BpmnHelp.svelte';
+	
 	import { 
 		Save, 
 		FolderOpen, 
@@ -90,16 +95,21 @@
 		}
 	}, 1000);
 
+
+
 	onMount(async () => {
 		
 		try {
-			// Dynamic import to avoid SSR issues
-			// Initialize BPMN modeler
+			// Initialize BPMN modeler with enhanced configuration
 			modeler = new BpmnModeler({
 				container: modelerContainer,
 				keyboard: {
 					bindTo: document
-				}
+				},
+				// Add minimap and ensure all BPMN elements are available
+				additionalModules: [
+					minimapModule
+				]
 			});
 
 			// Load default diagram
@@ -112,7 +122,18 @@
 					debouncedAutoSave();
 				});
 
+				// Log available palette entries for debugging
+				const palette = modeler.get('palette');
+				const contextPad = modeler.get('contextPad');
+				const replacementProvider = modeler.get('replace');
+				
+				console.log('Available palette entries:', palette.getEntries());
+				console.log('Context pad available:', !!contextPad);
+				console.log('Replacement provider available:', !!replacementProvider);
+
+				// Add instructions notification
 				showNotification('BPMN Designer loaded successfully', 'success');
+
 			} catch (error) {
 				console.error('Failed to load default diagram:', error);
 				showNotification('Failed to initialize BPMN Designer', 'error');
@@ -314,6 +335,9 @@
 				</div>
 			</div>
 		{/if}
+
+		<!-- Help Component -->
+		<!-- <BpmnHelp /> -->
 	</div>
 </div>
 
