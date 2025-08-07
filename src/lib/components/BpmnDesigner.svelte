@@ -3,8 +3,8 @@
 	import BpmnModeler from 'bpmn-js/lib/Modeler';
 	import { BpmnFileManager, debounce, type FileHandle } from '../utils/fileAccess';
 	
-	// Import additional modules for enhanced BPMN functionality
-	import minimapModule from 'diagram-js-minimap';
+	// Remove minimap temporarily due to deprecated API warnings
+	// import minimapModule from 'diagram-js-minimap';
 	// import BpmnHelp from './BpmnHelp.svelte';
 	
 	import { 
@@ -14,7 +14,8 @@
 		Download, 
 		Clock,
         CircleCheck,
-        CircleAlert
+        CircleAlert,
+        CircleQuestionMark
 	} from 'lucide-svelte';
 	import { toaster } from '../toaster-svelte';
 
@@ -51,11 +52,10 @@
 				duration: 3000,
 			});
 		}
-		// statusMessage = message;
-		// console.log(`[${type.toUpperCase()}] ${message}`);
-		// setTimeout(() => {
-		// 	statusMessage = '';
-		// }, 3000);
+	}
+
+	function showHelp() {
+		showNotification('💡 To access all BPMN elements: Click any element → Look for the wrench icon (🔧) → Click it to see Message Events, Service Tasks, etc.', 'info');
 	}
 
 	// Default BPMN diagram
@@ -104,11 +104,13 @@
 			// Initialize BPMN modeler with enhanced configuration
 			modeler = new BpmnModeler({
 				container: modelerContainer,
-				
-				// Add minimap and ensure all BPMN elements are available
-				additionalModules: [
-					minimapModule
-				]
+				keyboard: {
+					bindTo: document
+				}
+				// Minimap removed temporarily due to deprecated API warnings
+				// additionalModules: [
+				// 	minimapModule
+				// ]
 			});
 
 			// Load default diagram
@@ -124,14 +126,24 @@
 				// Log available palette entries for debugging
 				const palette = modeler.get('palette');
 				const contextPad = modeler.get('contextPad');
-				const replacementProvider = modeler.get('replace');
+				const replace = modeler.get('replace');
 				
-				console.log('Available palette entries:', palette.getEntries());
+				console.log('Available palette entries:', Object.keys(palette.getEntries()));
 				console.log('Context pad available:', !!contextPad);
-				console.log('Replacement provider available:', !!replacementProvider);
+				console.log('Replace provider available:', !!replace);
+
+				// Log information about accessing more elements
+				console.log('%c🔧 To access all BPMN elements:', 'color: #4f46e5; font-weight: bold');
+				console.log('1. Click on any element to select it');
+				console.log('2. Look for the wrench icon (🔧) that appears');
+				console.log('3. Click the wrench to see ALL available element types');
+				console.log('4. This includes Message Start Events, Timer Events, Service Tasks, etc.');
 
 				// Add instructions notification
 				showNotification('BPMN Designer loaded successfully', 'success');
+				setTimeout(() => {
+					showNotification('💡 Click any element, then use the wrench icon (🔧) to access all BPMN element types!', 'info');
+				}, 2000);
 
 			} catch (error) {
 				console.error('Failed to load default diagram:', error);
@@ -265,6 +277,15 @@
 				>
 					<Download size={16} />
 					<span class="hidden sm:inline">Save As</span>
+				</button>
+
+				<button
+					class="btn btn-sm variant-ghost-surface"
+					on:click={showHelp}
+					title="How to access all BPMN elements"
+				>
+					<CircleQuestionMark size={16} />
+					<span class="hidden sm:inline">Help</span>
 				</button>
 			</div>
 

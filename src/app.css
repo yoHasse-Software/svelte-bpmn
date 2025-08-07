@@ -6,8 +6,8 @@
 /* BPMN.js styles */
 @import 'bpmn-js/dist/assets/diagram-js.css';
 @import 'bpmn-js/dist/assets/bpmn-font/css/bpmn.css';
-/* Minimap styles */
-@import 'diagram-js-minimap/assets/diagram-js-minimap.css';
+/* Minimap styles - temporarily removed due to deprecated API warnings */
+/* @import 'diagram-js-minimap/assets/diagram-js-minimap.css'; */
 
 @source '../node_modules/@skeletonlabs/skeleton-svelte/dist';
 
