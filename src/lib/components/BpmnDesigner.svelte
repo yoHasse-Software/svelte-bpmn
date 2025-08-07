@@ -104,9 +104,7 @@
 			// Initialize BPMN modeler with enhanced configuration
 			modeler = new BpmnModeler({
 				container: modelerContainer,
-				keyboard: {
-					bindTo: document
-				},
+				
 				// Add minimap and ensure all BPMN elements are available
 				additionalModules: [
 					minimapModule
