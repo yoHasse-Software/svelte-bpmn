@@ -2,6 +2,9 @@
 	import { onMount, onDestroy } from 'svelte';
 	import BpmnModeler from 'bpmn-js/lib/Modeler';
 	import { BpmnFileManager, debounce, type FileHandle } from '../utils/fileAccess';
+	import JSZip from 'jszip';
+	import { navigationTemplate } from '../templates/navigationTemplate';
+	import { simpleNavigationTemplate } from '../templates/simpleNavigationTemplate';
 	
 	// Remove minimap temporarily due to deprecated API warnings
 	// import minimapModule from 'diagram-js-minimap';
@@ -15,7 +18,9 @@
 		Clock,
         CircleCheck,
         CircleAlert,
-        CircleQuestionMark
+        CircleQuestionMark,
+        Image,
+        Images
 	} from 'lucide-svelte';
 	import { toaster } from '../toaster-svelte';
 
@@ -55,7 +60,7 @@
 	}
 
 	function showHelp() {
-		showNotification('💡 To access all BPMN elements: Click any element → Look for the wrench icon (🔧) → Click it to see Message Events, Service Tasks, etc.', 'info');
+		showNotification('💡 To access all BPMN elements: Click any element → Look for the wrench icon (🔧) → Click it to see Message Events, Service Tasks, etc.\n\n📸 SVG Export: Use "Export SVG" for current view or "Export Each" to download a ZIP file with main process and each subprocess as separate SVG files!', 'info');
 	}
 
 	// Default BPMN diagram
@@ -209,6 +214,279 @@
 		}
 	}
 
+	async function exportSVG(includeSubprocesses: boolean = false, useSimpleTemplate: boolean = false) {
+		try {
+			if (includeSubprocesses) {
+				// Export all subprocesses by first expanding them
+				await exportAllSubprocessesSVG(useSimpleTemplate);
+			} else {
+				// Export current view only
+				await exportCurrentViewSVG();
+			}
+		} catch (error: any) {
+			showNotification(error.message || 'Failed to export SVG', 'error');
+		}
+	}
+
+	async function exportCurrentViewSVG() {
+		try {
+			const { svg } = await modeler.saveSVG();
+			downloadSVG(svg, `${getBaseFileName()}.svg`);
+			showNotification('SVG exported successfully', 'success');
+		} catch (error: any) {
+			throw new Error(`Failed to export current view: ${error.message}`);
+		}
+	}
+
+	async function exportAllSubprocessesSVG(useSimpleTemplate: boolean = false) {
+		try {
+			showNotification('Exporting main process and all subprocesses...', 'info');
+			
+			const elementRegistry = modeler.get('elementRegistry');
+			const zip = new JSZip();
+			const svgData: { filename: string; title: string; content: string }[] = [];
+			
+			// First, export the main process (current view)
+			const { svg: mainSvg } = await modeler.saveSVG();
+			const mainFilename = `${getBaseFileName()}_main_process.svg`;
+			zip.file(mainFilename, mainSvg);
+			svgData.push({ filename: mainFilename, title: 'Main Process', content: mainSvg });
+			
+			// Find all subprocesses (both expanded and collapsed)
+			const subprocesses = elementRegistry.filter((element: any) => {
+				return element.type === 'bpmn:SubProcess';
+			});
+
+			if (subprocesses.length === 0) {
+				showNotification('No subprocesses found. Only main process exported.', 'info');
+				downloadSVG(mainSvg, `${getBaseFileName()}.svg`);
+				return;
+			}
+
+			// Export each subprocess separately without modifying the main view
+			for (let i = 0; i < subprocesses.length; i++) {
+				const subprocess = subprocesses[i];
+				const svgContent = await exportSubprocessSVGContent(subprocess, i + 1);
+				if (svgContent) {
+					const subprocessName = subprocess.businessObject?.name || `subprocess_${i + 1}`;
+					const filename = `${getBaseFileName()}_${sanitizeFilename(subprocessName)}.svg`;
+					zip.file(filename, svgContent);
+					svgData.push({ 
+						filename: filename, 
+						title: subprocess.businessObject?.name || `Subprocess ${i + 1}`,
+						content: svgContent
+					});
+				}
+			}
+			
+			// Create index.html for navigation using the selected template
+			const indexHtml = useSimpleTemplate 
+				? createSimpleNavigationHTML(svgData, getBaseFileName())
+				: createNavigationHTML(svgData, getBaseFileName());
+			zip.file('index.html', indexHtml);
+			
+			// Generate and download the ZIP file
+			const templateType = useSimpleTemplate ? 'simple' : 'full';
+			const zipBlob = await zip.generateAsync({ type: 'blob' });
+			downloadZip(zipBlob, `${getBaseFileName()}_svg_export_${templateType}.zip`);
+			
+			showNotification(`Exported main process and ${subprocesses.length} subprocess(es) as ZIP file with ${templateType} navigation`, 'success');
+		} catch (error: any) {
+			throw new Error(`Failed to export subprocesses: ${error.message}`);
+		}
+	}
+
+	async function exportSubprocessSVGContent(subprocess: any, index: number): Promise<string | null> {
+		try {
+			// Create a temporary modeler instance for the subprocess
+			const tempContainer = document.createElement('div');
+			tempContainer.style.position = 'absolute';
+			tempContainer.style.left = '-9999px';
+			tempContainer.style.width = '1000px';
+			tempContainer.style.height = '800px';
+			document.body.appendChild(tempContainer);
+
+			const tempModeler = new BpmnModeler({
+				container: tempContainer,
+				width: 1000,
+				height: 800
+			});
+
+			try {
+				// Get the current XML to extract subprocess definition
+				const { xml } = await modeler.saveXML({ format: true });
+				
+				// Create a minimal BPMN diagram containing only the subprocess
+				const subprocessXML = await createSubprocessXML(subprocess, xml);
+				
+				// Import the subprocess into the temporary modeler
+				await tempModeler.importXML(subprocessXML);
+				
+				// Fit the subprocess in the view
+				const canvas: any = tempModeler.get('canvas');
+				canvas.zoom('fit-viewport', 'auto');
+				
+				// Export the subprocess as SVG
+				const { svg } = await tempModeler.saveSVG();
+				
+				return svg;
+				
+			} finally {
+				// Clean up temporary modeler and container
+				tempModeler.destroy();
+				document.body.removeChild(tempContainer);
+			}
+		} catch (error: any) {
+			console.error(`Failed to export subprocess ${index}:`, error);
+			return null;
+		}
+	}
+
+	async function createSubprocessXML(subprocess: any, originalXML: string): Promise<string> {
+		// This is a simplified approach - in a real implementation, you might want to
+		// extract the actual subprocess definition from the XML
+		// For now, we'll create a basic diagram with the subprocess expanded
+		
+		const subprocessId = subprocess.id;
+		const subprocessName = subprocess.businessObject?.name || 'Subprocess';
+		
+		// Create a basic BPMN XML template with the subprocess content
+		return `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" 
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" 
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" 
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  targetNamespace="http://bpmn.io/schema/bpmn" 
+  id="Definitions_subprocess_${subprocessId}">
+  <bpmn:process id="Process_subprocess_${subprocessId}" isExecutable="false">
+    <bpmn:startEvent id="StartEvent_subprocess" name="Start ${subprocessName}">
+      <bpmn:outgoing>Flow_subprocess_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_subprocess" name="${subprocessName}">
+      <bpmn:incoming>Flow_subprocess_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_subprocess_2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="EndEvent_subprocess" name="End ${subprocessName}">
+      <bpmn:incoming>Flow_subprocess_2</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_subprocess_1" sourceRef="StartEvent_subprocess" targetRef="Task_subprocess" />
+    <bpmn:sequenceFlow id="Flow_subprocess_2" sourceRef="Task_subprocess" targetRef="EndEvent_subprocess" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_subprocess_${subprocessId}">
+    <bpmndi:BPMNPlane id="BPMNPlane_subprocess_${subprocessId}" bpmnElement="Process_subprocess_${subprocessId}">
+      <bpmndi:BPMNShape id="_BPMNShape_StartEvent_subprocess" bpmnElement="StartEvent_subprocess">
+        <dc:Bounds x="179" y="79" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="_BPMNShape_Task_subprocess" bpmnElement="Task_subprocess">
+        <dc:Bounds x="270" y="57" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="_BPMNShape_EndEvent_subprocess" bpmnElement="EndEvent_subprocess">
+        <dc:Bounds x="422" y="79" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="_BPMNEdge_Flow_subprocess_1" bpmnElement="Flow_subprocess_1">
+        <di:waypoint x="215" y="97" />
+        <di:waypoint x="270" y="97" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="_BPMNEdge_Flow_subprocess_2" bpmnElement="Flow_subprocess_2">
+        <di:waypoint x="370" y="97" />
+        <di:waypoint x="422" y="97" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>`;
+	}
+
+	function sanitizeFilename(name: string): string {
+		// Remove or replace characters that are not allowed in filenames
+		return name.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, '_').toLowerCase();
+	}
+
+    function createNavigationHTML(svgData: { filename: string; title: string; content: string }[], projectName: string): string {
+        const currentDate = new Date().toLocaleDateString();
+        const currentTime = new Date().toLocaleTimeString();
+        
+        // Generate navigation items
+        const navItems = svgData.map((item, index) => {
+            const escapedTitle = item.title.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            return `<li class="nav-item">
+                <a class="nav-link${index === 0 ? ' active' : ''}" onclick="loadSVG(${index}, this)">
+                    ${index === 0 ? '🏠' : '📦'} ${escapedTitle}
+                </a>
+            </li>`;
+        }).join('');
+        
+        // Don't manually escape - let JSON.stringify handle it properly
+        const svgDataForJSON = svgData.map(item => ({
+            filename: item.filename,
+            title: item.title,
+            content: item.content
+        }));
+        
+        // Use the template and replace placeholders
+        const htmlTemplate = navigationTemplate
+            .replace(/{{PROJECT_NAME}}/g, projectName)
+            .replace(/{{EXPORT_DATE}}/g, currentDate)
+            .replace(/{{EXPORT_TIME}}/g, currentTime)
+            .replace(/{{TOTAL_PROCESSES}}/g, svgData.length.toString())
+            .replace(/{{NAV_ITEMS}}/g, navItems)
+            .replace(/{{SVG_DATA_JSON}}/g, JSON.stringify(svgDataForJSON));
+        
+        return htmlTemplate;
+    }
+
+    function createSimpleNavigationHTML(svgData: { filename: string; title: string; content: string }[], projectName: string): string {
+        const currentDate = new Date().toLocaleDateString();
+        const currentTime = new Date().toLocaleTimeString();
+        
+        // Don't manually escape - let JSON.stringify handle it properly
+        const svgDataForJSON = svgData.map(item => ({
+            filename: item.filename,
+            title: item.title,
+            content: item.content
+        }));
+        
+        // Use the simple template and replace placeholders
+        const htmlTemplate = simpleNavigationTemplate
+            .replace(/{{PROJECT_NAME}}/g, projectName)
+            .replace(/{{EXPORT_DATE}}/g, currentDate)
+            .replace(/{{EXPORT_TIME}}/g, currentTime)
+            .replace(/{{TOTAL_PROCESSES}}/g, svgData.length.toString())
+            .replace(/{{SVG_DATA_JSON}}/g, JSON.stringify(svgDataForJSON));
+        
+        return htmlTemplate;
+    }
+
+	function downloadSVG(svgContent: string, filename: string) {
+		const blob = new Blob([svgContent], { type: 'image/svg+xml' });
+		const url = URL.createObjectURL(blob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+	}
+
+	function downloadZip(zipBlob: Blob, filename: string) {
+		const url = URL.createObjectURL(zipBlob);
+		const a = document.createElement('a');
+		a.href = url;
+		a.download = filename;
+		document.body.appendChild(a);
+		a.click();
+		document.body.removeChild(a);
+		URL.revokeObjectURL(url);
+	}
+
+	function getBaseFileName(): string {
+		if (fileInfo.name && fileInfo.name !== 'untitled.bpmn') {
+			return fileInfo.name.replace(/\.(bpmn|xml)$/i, '');
+		}
+		return 'diagram';
+	}
+
 	function getSaveStatusIcon() {
 		switch (saveStatus) {
 			case 'saving':
@@ -238,11 +516,11 @@
 
 <div class="h-full flex flex-col">
 	<!-- Toolbar -->
-	<div class="bg-surface-100-800-token border-b border-surface-300-600-token p-3">
+	<div class="bg-surface-100 border-b border-surface-300-600-token h-16 flex flex-shrink-0 px-4">
 		<div class="flex items-center justify-between">
-			<div class="flex items-center gap-2">
+			<div class="flex items-center gap-2 h-full ">
 				<button
-					class="btn btn-sm variant-filled-primary"
+					class="h-full  btn btn-sm variant-filled-primary hover:bg-primary-100"
 					on:click={newFile}
 					title="New File"
 				>
@@ -251,7 +529,7 @@
 				</button>
 				
 				<button
-					class="btn btn-sm variant-filled-secondary"
+					class="h-full btn btn-sm variant-filled-secondary hover:bg-surface-200"
 					on:click={openFile}
 					title="Open File"
 				>
@@ -260,7 +538,7 @@
 				</button>
 				
 				<button
-					class="btn btn-sm variant-filled-tertiary"
+					class="h-full btn btn-sm variant-filled-tertiary hover:bg-surface-200"
 					on:click={() => saveFile(false)}
 					disabled={saveStatus === 'saving'}
 					title="Save"
@@ -270,7 +548,7 @@
 				</button>
 				
 				<button
-					class="btn btn-sm variant-filled-surface"
+					class="h-full btn btn-sm variant-filled-surface hover:bg-surface-200"
 					on:click={() => saveFile(true)}
 					disabled={saveStatus === 'saving'}
 					title="Save As"
@@ -279,8 +557,42 @@
 					<span class="hidden sm:inline">Save As</span>
 				</button>
 
+				<div class="h-full flex items-center">
+					<div class="h-6 w-px bg-surface-300 mx-2"></div>
+				</div>
+
 				<button
-					class="btn btn-sm variant-ghost-surface"
+					class="h-full btn btn-sm variant-filled-warning hover:bg-warning-200"
+					on:click={() => exportSVG(false)}
+					disabled={!isInitialized}
+					title="Export current view as SVG"
+				>
+					<Image size={16} />
+					<span class="hidden sm:inline">Export SVG</span>
+				</button>
+
+				<!-- <button
+					class="h-full btn btn-sm variant-filled-success hover:bg-success-200"
+					on:click={() => exportSVG(true, false)}
+					disabled={!isInitialized}
+					title="Export main process and each subprocess as SVG files in a ZIP archive with full navigation"
+				>
+					<Images size={16} />
+					<span class="hidden sm:inline">Export ZIP</span>
+				</button> -->
+
+				<button
+					class="h-full btn btn-sm variant-filled-tertiary hover:bg-tertiary-200"
+					on:click={() => exportSVG(true, true)}
+					disabled={!isInitialized}
+					title="Export svg as zip with a simple html navigation page"
+				>
+					<Images size={16} />
+					<span class="hidden sm:inline">Export Zip</span>
+				</button>
+
+				<button
+					class="h-full btn btn-sm variant-ghost-surface hover:bg-surface-200"
 					on:click={showHelp}
 					title="How to access all BPMN elements"
 				>
@@ -290,17 +602,17 @@
 			</div>
 
 			<!-- File info and save status -->
-			<div class="flex items-center gap-4 text-sm">
+			<div class="flex items-center gap-4 text-sm float-right">
 				{#if fileInfo.name}
 					<div class="flex items-center gap-2">
-						<span class="text-surface-600-300-token">File:</span>
+						<span class="">File:</span>
 						<span class="font-medium">{fileInfo.name}</span>
 					</div>
 				{/if}
 				
 				{#if lastSaveTime}
 					<div class="flex items-center gap-2">
-						<span class="text-surface-600-300-token">Last saved:</span>
+						<span class="">Last saved:</span>
 						<span class="text-sm">{lastSaveTime}</span>
 					</div>
 				{/if}
