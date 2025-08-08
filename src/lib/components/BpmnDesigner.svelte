@@ -1,10 +1,13 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import BpmnModeler from 'bpmn-js/lib/Modeler';
+	import BpmnColorPickerModule from 'bpmn-js-color-picker';
 	import { BpmnFileManager, debounce, type FileHandle } from '../utils/fileAccess';
 	import JSZip from 'jszip';
 	import { navigationTemplate } from '../templates/navigationTemplate';
 	import { simpleNavigationTemplate } from '../templates/simpleNavigationTemplate';
+
+
 	
 	// Remove minimap temporarily due to deprecated API warnings
 	// import minimapModule from 'diagram-js-minimap';
@@ -111,11 +114,10 @@
 				container: modelerContainer,
 				keyboard: {
 					bindTo: document
-				}
-				// Minimap removed temporarily due to deprecated API warnings
-				// additionalModules: [
-				// 	minimapModule
-				// ]
+				},
+				additionalModules: [
+					BpmnColorPickerModule
+				]
 			});
 
 			// Load default diagram
@@ -136,19 +138,6 @@
 				console.log('Available palette entries:', Object.keys(palette.getEntries()));
 				console.log('Context pad available:', !!contextPad);
 				console.log('Replace provider available:', !!replace);
-
-				// Log information about accessing more elements
-				console.log('%c🔧 To access all BPMN elements:', 'color: #4f46e5; font-weight: bold');
-				console.log('1. Click on any element to select it');
-				console.log('2. Look for the wrench icon (🔧) that appears');
-				console.log('3. Click the wrench to see ALL available element types');
-				console.log('4. This includes Message Start Events, Timer Events, Service Tasks, etc.');
-
-				// Add instructions notification
-				showNotification('BPMN Designer loaded successfully', 'success');
-				setTimeout(() => {
-					showNotification('💡 Click any element, then use the wrench icon (🔧) to access all BPMN element types!', 'info');
-				}, 2000);
 
 			} catch (error) {
 				console.error('Failed to load default diagram:', error);
