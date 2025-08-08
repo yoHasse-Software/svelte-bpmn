@@ -283,14 +283,10 @@ export const simpleNavigationTemplate = `<!DOCTYPE html>
                     e.stopPropagation();
                     
                     // Try to find the subprocess ID from the element or its parent
-                    let subprocessId = element.getAttribute('data-element-id') || '';
-                    
-                    // If clicking on a rect, get the ID from the parent group
-                    if (!subprocessId && element.tagName === 'rect') {
-                        const parentGroup = element.closest('[data-element-id]');
-                        if (parentGroup) {
-                            subprocessId = parentGroup.getAttribute('data-element-id') || '';
-                        }
+                    let subprocessId = '';
+                    const parentGroup = element.closest('[data-element-id]');
+                    if (parentGroup) {
+                        subprocessId = parentGroup.getAttribute('data-element-id') || '';
                     }
                     
                     const matchingSubprocess = findMatchingSubprocess(subprocessId);
@@ -319,8 +315,9 @@ export const simpleNavigationTemplate = `<!DOCTYPE html>
             // Try to find a subprocess that matches this ID or name
             for (let i = 1; i < svgData.length; i++) { // Skip main process (index 0)
                 const subprocess = svgData[i];
-                // Match by filename containing the subprocess ID or similar name
-                if (subprocess.filename.toLowerCase().includes(subprocessId.toLowerCase()) ||
+                // Match by elementId containing the subprocess ID or similar name
+                if (subprocess.elementId.toLowerCase().includes(subprocessId.toLowerCase()) ||
+                    subprocess.filename.toLowerCase().includes(subprocessId.toLowerCase()) ||
                     subprocess.title.toLowerCase().includes('subprocess')) {
                     return { index: i, data: subprocess };
                 }
@@ -328,6 +325,7 @@ export const simpleNavigationTemplate = `<!DOCTYPE html>
             
             // If no specific match, return the next subprocess in the list
             if (svgData.length > 1) {
+                console.log('no specific match for', subprocessId, 'returning next subprocess');
                 return { index: 1, data: svgData[1] };
             }
             

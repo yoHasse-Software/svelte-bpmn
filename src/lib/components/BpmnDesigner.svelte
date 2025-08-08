@@ -238,19 +238,26 @@
 		}
 	}
 
+	type SvgData = {
+		elementId: string;
+		filename: string;
+		title: string;
+		content: string;
+	};
+
 	async function exportAllSubprocessesSVG(useSimpleTemplate: boolean = false) {
 		try {
 			showNotification('Exporting main process and all subprocesses...', 'info');
 			
 			const elementRegistry = modeler.get('elementRegistry');
 			const zip = new JSZip();
-			const svgData: { filename: string; title: string; content: string }[] = [];
+			const svgData: SvgData[] = [];
 			
 			// First, export the main process (current view)
 			const { svg: mainSvg } = await modeler.saveSVG();
 			const mainFilename = `${getBaseFileName()}_main_process.svg`;
 			zip.file(mainFilename, mainSvg);
-			svgData.push({ filename: mainFilename, title: 'Main Process', content: mainSvg });
+			svgData.push({ elementId: 'main_process', filename: mainFilename, title: 'Main Process', content: mainSvg });
 			
 			// Find all subprocesses (both expanded and collapsed)
 			const subprocesses = elementRegistry.filter((element: any) => {
@@ -272,6 +279,7 @@
 					const filename = `${getBaseFileName()}_${sanitizeFilename(subprocessName)}.svg`;
 					zip.file(filename, svgContent);
 					svgData.push({ 
+						elementId: subprocess.id || subprocess.businessObject?.id || `subprocess_${i + 1}`,
 						filename: filename, 
 						title: subprocess.businessObject?.name || `Subprocess ${i + 1}`,
 						content: svgContent
@@ -280,9 +288,7 @@
 			}
 			
 			// Create index.html for navigation using the selected template
-			const indexHtml = useSimpleTemplate 
-				? createSimpleNavigationHTML(svgData, getBaseFileName())
-				: createNavigationHTML(svgData, getBaseFileName());
+			const indexHtml = createSimpleNavigationHTML(svgData, getBaseFileName());
 			zip.file('index.html', indexHtml);
 			
 			// Generate and download the ZIP file
@@ -343,14 +349,125 @@
 	}
 
 	async function createSubprocessXML(subprocess: any, originalXML: string): Promise<string> {
-		// This is a simplified approach - in a real implementation, you might want to
-		// extract the actual subprocess definition from the XML
-		// For now, we'll create a basic diagram with the subprocess expanded
-		
-		const subprocessId = subprocess.id;
-		const subprocessName = subprocess.businessObject?.name || 'Subprocess';
-		
-		// Create a basic BPMN XML template with the subprocess content
+		try {
+			// Parse the original XML to extract the actual subprocess content
+			const parser = new DOMParser();
+			const xmlDoc = parser.parseFromString(originalXML, 'text/xml');
+			
+			const subprocessId = subprocess.id;
+			const subprocessName = subprocess.businessObject?.name || 'Subprocess';
+			
+			// Find the subprocess element in the XML
+			const subprocessElement = xmlDoc.querySelector(`bpmn\\:subProcess[id="${subprocessId}"], subProcess[id="${subprocessId}"]`);
+			console.log('Subprocess Element:', subprocessElement);
+			if (!subprocessElement) {
+				// Fallback to the simple version if we can't find the subprocess
+				console.warn(`!!!!Subprocess with id "${subprocessId}" not found in the original XML. Using fallback.`);
+				return createFallbackSubprocessXML(subprocessId, subprocessName);
+			}
+			
+			// Extract all child elements of the subprocess
+			const subprocessChildren = Array.from(subprocessElement.children);
+			
+			// Find the diagram information for this subprocess
+			const diagramPlane = xmlDoc.querySelector(`bpmndi\\:BPMNPlane[bpmnElement="${subprocessId}"], BPMNPlane[bpmnElement="${subprocessId}"]`);
+			
+			// Create a new BPMN XML with the subprocess as the main process
+			const newProcessId = `Process_${subprocessId}_expanded`;
+			
+			let processContent = '';
+			let diagramContent = '';
+			
+			// Extract subprocess content
+			if (subprocessChildren.length > 0) {
+				processContent = subprocessChildren.map(child => {
+					// Clone the element and update any references
+					const clonedChild = child.cloneNode(true) as Element;
+					return clonedChild.outerHTML;
+				}).join('\n    ');
+			} else {
+				// If subprocess is empty, create a simple flow
+				processContent = `
+    <bpmn:startEvent id="StartEvent_${subprocessId}" name="Start">
+      <bpmn:outgoing>Flow_${subprocessId}_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:task id="Task_${subprocessId}" name="${subprocessName} Content">
+      <bpmn:incoming>Flow_${subprocessId}_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_${subprocessId}_2</bpmn:outgoing>
+    </bpmn:task>
+    <bpmn:endEvent id="EndEvent_${subprocessId}" name="End">
+      <bpmn:incoming>Flow_${subprocessId}_2</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_${subprocessId}_1" sourceRef="StartEvent_${subprocessId}" targetRef="Task_${subprocessId}" />
+    <bpmn:sequenceFlow id="Flow_${subprocessId}_2" sourceRef="Task_${subprocessId}" targetRef="EndEvent_${subprocessId}" />`;
+			}
+			
+			// Extract diagram information
+			if (diagramPlane) {
+				const shapes = diagramPlane.querySelectorAll('bpmndi\\:BPMNShape, BPMNShape');
+				const edges = diagramPlane.querySelectorAll('bpmndi\\:BPMNEdge, BPMNEdge');
+				
+				const shapeContent = Array.from(shapes).map(shape => {
+					const clonedShape = shape.cloneNode(true) as Element;
+					return '      ' + clonedShape.outerHTML;
+				}).join('\n');
+				
+				const edgeContent = Array.from(edges).map(edge => {
+					const clonedEdge = edge.cloneNode(true) as Element;
+					return '      ' + clonedEdge.outerHTML;
+				}).join('\n');
+				
+				diagramContent = shapeContent + '\n' + edgeContent;
+			} else {
+				// Create default diagram positions if no diagram info found
+				diagramContent = `
+      <bpmndi:BPMNShape id="_BPMNShape_StartEvent_${subprocessId}" bpmnElement="StartEvent_${subprocessId}">
+        <dc:Bounds x="179" y="79" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="_BPMNShape_Task_${subprocessId}" bpmnElement="Task_${subprocessId}">
+        <dc:Bounds x="270" y="57" width="100" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="_BPMNShape_EndEvent_${subprocessId}" bpmnElement="EndEvent_${subprocessId}">
+        <dc:Bounds x="422" y="79" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="_BPMNEdge_Flow_${subprocessId}_1" bpmnElement="Flow_${subprocessId}_1">
+        <di:waypoint x="215" y="97" />
+        <di:waypoint x="270" y="97" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="_BPMNEdge_Flow_${subprocessId}_2" bpmnElement="Flow_${subprocessId}_2">
+        <di:waypoint x="370" y="97" />
+        <di:waypoint x="422" y="97" />
+      </bpmndi:BPMNEdge>`;
+			}
+			
+			// Build the complete XML
+			return `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" 
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" 
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC" 
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  targetNamespace="http://bpmn.io/schema/bpmn" 
+  id="Definitions_${subprocessId}_expanded">
+  <bpmn:process id="${newProcessId}" isExecutable="false">
+    ${processContent}
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_${subprocessId}_expanded">
+    <bpmndi:BPMNPlane id="BPMNPlane_${subprocessId}_expanded" bpmnElement="${newProcessId}">
+${diagramContent}
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>`;
+			
+		} catch (error) {
+			console.error('Error parsing subprocess XML:', error);
+			// Fallback to simple version
+			return createFallbackSubprocessXML(subprocess.id, subprocess.businessObject?.name || 'Subprocess');
+		}
+	}
+
+	function createFallbackSubprocessXML(subprocessId: string, subprocessName: string): string {
+		// Fallback implementation - the original simple version
 		return `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
   xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL" 
@@ -402,45 +519,14 @@
 		return name.replace(/[<>:"/\\|?*]/g, '_').replace(/\s+/g, '_').toLowerCase();
 	}
 
-    function createNavigationHTML(svgData: { filename: string; title: string; content: string }[], projectName: string): string {
-        const currentDate = new Date().toLocaleDateString();
-        const currentTime = new Date().toLocaleTimeString();
-        
-        // Generate navigation items
-        const navItems = svgData.map((item, index) => {
-            const escapedTitle = item.title.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-            return `<li class="nav-item">
-                <a class="nav-link${index === 0 ? ' active' : ''}" onclick="loadSVG(${index}, this)">
-                    ${index === 0 ? '🏠' : '📦'} ${escapedTitle}
-                </a>
-            </li>`;
-        }).join('');
-        
-        // Don't manually escape - let JSON.stringify handle it properly
-        const svgDataForJSON = svgData.map(item => ({
-            filename: item.filename,
-            title: item.title,
-            content: item.content
-        }));
-        
-        // Use the template and replace placeholders
-        const htmlTemplate = navigationTemplate
-            .replace(/{{PROJECT_NAME}}/g, projectName)
-            .replace(/{{EXPORT_DATE}}/g, currentDate)
-            .replace(/{{EXPORT_TIME}}/g, currentTime)
-            .replace(/{{TOTAL_PROCESSES}}/g, svgData.length.toString())
-            .replace(/{{NAV_ITEMS}}/g, navItems)
-            .replace(/{{SVG_DATA_JSON}}/g, JSON.stringify(svgDataForJSON));
-        
-        return htmlTemplate;
-    }
 
-    function createSimpleNavigationHTML(svgData: { filename: string; title: string; content: string }[], projectName: string): string {
+    function createSimpleNavigationHTML(svgData: SvgData[], projectName: string): string {
         const currentDate = new Date().toLocaleDateString();
         const currentTime = new Date().toLocaleTimeString();
         
         // Don't manually escape - let JSON.stringify handle it properly
         const svgDataForJSON = svgData.map(item => ({
+			elementId: item.elementId,
             filename: item.filename,
             title: item.title,
             content: item.content
